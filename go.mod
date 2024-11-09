@@ -2,7 +2,11 @@ module go-tracker
 
 go 1.23.2
 
-require fyne.io/fyne/v2 v2.5.2
+require (
+	fyne.io/fyne/v2 v2.5.2
+	github.com/kbinani/screenshot v0.0.0-20240820160931-a8a2c5d0e191
+	github.com/mattn/go-sqlite3 v1.14.24
+)
 
 require (
 	fyne.io/systray v1.11.0 // indirect
@@ -23,11 +27,7 @@ require (
 	github.com/jeandeaual/go-locale v0.0.0-20240223122105-ce5225dcaa49 // indirect
 	github.com/jezek/xgb v1.1.1 // indirect
 	github.com/jsummers/gobmp v0.0.0-20151104160322-e2ba15ffa76e // indirect
-	github.com/kbinani/screenshot v0.0.0-20240820160931-a8a2c5d0e191 // indirect
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e // indirect
-	github.com/mattn/go-gtk v0.0.0-20240119050609-48574e312fac // indirect
-	github.com/mattn/go-sqlite3 v1.14.24 // indirect
-	github.com/mqu/go-notify v0.0.0-20130719194048-ef6f6f49d093 // indirect
 	github.com/nicksnyder/go-i18n/v2 v2.4.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rymdport/portal v0.2.6 // indirect

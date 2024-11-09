@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"fmt"
 	"image/png"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 	"github.com/kbinani/screenshot"
@@ -34,6 +36,9 @@ var (
 
 	sessionID int64
 )
+
+const PREF_ACTIVITY_INTERVAL = "activityInterval"
+const PREF_INACTIVITY_THRESHOLD = "inactivityThreshold"
 
 func prepareDatabase() {
 	if db != nil {
@@ -106,24 +111,86 @@ func saveSessionEnd(id int64) {
 func main() {
 	started = false
 
-	app := app.New()
-	window := app.NewWindow("GoTracker")
+	myApp := app.NewWithID("com.github.xxrockyxx.gotracker")
+	window := myApp.NewWindow("GoTracker")
 
-	window.Resize(fyne.NewSize(200, 200))
+	window.Resize(fyne.NewSize(250, 250))
 	window.SetFixedSize(true)
+
+	intervalEntry := newNumericalEntry()
+	intervalEntry.SetPlaceHolder("60")
+	intervalEntry.SetText(myApp.Preferences().StringWithFallback(PREF_ACTIVITY_INTERVAL, "60"))
+
+	intervalContainer := container.NewVBox(
+		widget.NewLabel("Activity Interval (seconds)"),
+		intervalEntry,
+	)
+
+	inactivityEntry := newNumericalEntry()
+	inactivityEntry.SetPlaceHolder("300")
+	inactivityEntry.SetText(myApp.Preferences().StringWithFallback(PREF_INACTIVITY_THRESHOLD, "300"))
+
+	inactivityContainer := container.NewVBox(
+		widget.NewLabel("Inactivity Threshold (seconds)"),
+		inactivityEntry,
+	)
+
+	preferencesFormContainer := container.NewVBox(
+		intervalContainer,
+		layout.NewSpacer(),
+		inactivityContainer,
+	)
 
 	var toggleBtn *widget.Button
 
 	toggleBtn = widget.NewButton("Start", func() {
 		if started {
 			started = false
+
+			// Update UI
 			toggleBtn.SetText("Start")
+			intervalEntry.Enable()
+			inactivityEntry.Enable()
+
+			// Run side effects
 			saveSessionEnd(sessionID)
 			stopScheduler()
 			stopWatchingForInactivity()
 		} else {
+			// Validate inputs.
+			activityInterval, err := strconv.Atoi(intervalEntry.Text)
+			if err != nil {
+				errDialog := dialog.NewError(errors.New("Invalid activity interval"), window)
+				errDialog.Resize(fyne.NewSize(300, 100))
+				errDialog.Show()
+				return
+			}
+
+			inactivityThreshold, err := strconv.Atoi(inactivityEntry.Text)
+			if err != nil {
+				errDialog := dialog.NewError(errors.New("Invalid inactivity threshold"), window)
+				errDialog.Resize(fyne.NewSize(300, 100))
+				errDialog.Show()
+				return
+			}
+
+			if inactivityThreshold < activityInterval {
+				errDialog := dialog.NewError(errors.New("Inactivity threshold cannot be lower than activity interval"), window)
+				errDialog.Resize(fyne.NewSize(500, 500))
+				errDialog.Show()
+				return
+			}
+
 			started = true
+
+			// Update UI
 			toggleBtn.SetText("Stop")
+			intervalEntry.Disable()
+			inactivityEntry.Disable()
+
+			// Save activity interval and inactivity threshold on start
+			myApp.Preferences().SetString(PREF_ACTIVITY_INTERVAL, intervalEntry.Text)
+			myApp.Preferences().SetString(PREF_INACTIVITY_THRESHOLD, inactivityEntry.Text)
 
 			prepareDatabase()
 
@@ -133,12 +200,21 @@ func main() {
 				panic("Failed to start session")
 			}
 
-			startScheduler(5 * time.Second)
-			watchForInactivity(10*time.Second, 5*time.Second)
+			startScheduler(time.Duration(activityInterval) * time.Second)
+			watchForInactivity(time.Duration(inactivityThreshold)*time.Second, time.Duration(activityInterval)*time.Second)
 		}
 	})
 
-	content := container.New(layout.NewCenterLayout(), toggleBtn)
+	content := container.New(
+		layout.NewPaddedLayout(),
+		container.NewVBox(
+			preferencesFormContainer,
+			container.New(
+				layout.NewPaddedLayout(),
+				toggleBtn,
+			),
+		),
+	)
 
 	window.SetContent(content)
 	window.CenterOnScreen()
@@ -213,7 +289,6 @@ func startScheduler(interval time.Duration) {
 		activityTicker = time.NewTicker(interval)
 		activityTickerDone = make(chan struct{})
 		for {
-			println("for startScheduler")
 			select {
 			case <-activityTicker.C:
 				saveScreenshots()
@@ -290,6 +365,7 @@ func saveInactivityEnd(id int64) {
 	}
 }
 
+// @TODO: UI for adding reason for inactivity
 func watchForInactivity(threshold time.Duration, schedulerInterval time.Duration) {
 	if idleTicker != nil {
 		return
@@ -305,7 +381,6 @@ func watchForInactivity(threshold time.Duration, schedulerInterval time.Duration
 		inactiveId := int64(-1)
 
 		for {
-			println("for watchForInactivity")
 			select {
 			case <-idleTicker.C:
 				idleTime := getIdleTime()
@@ -317,9 +392,11 @@ func watchForInactivity(threshold time.Duration, schedulerInterval time.Duration
 				} else if idleTime < threshold && inactive {
 					inactive = false
 					println("User is active")
+
 					if inactiveId != -1 {
 						saveInactivityEnd(inactiveId)
 					}
+
 					startScheduler(schedulerInterval)
 				}
 			case <-idleTickerDone:
