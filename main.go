@@ -311,7 +311,7 @@ func saveActiveWindows() {
 	tx, err := db.Begin()
 
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error: %s\n", err)
 		return
 	}
 
@@ -385,7 +385,7 @@ func getIdleTime() time.Duration {
 	err := cmd.Run()
 
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error: %s\n", err)
 		return 0
 	}
 
@@ -393,27 +393,26 @@ func getIdleTime() time.Duration {
 	idleTimeInt, err := strconv.Atoi(idleTime)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error: %s\n", err)
 		return 0
 	}
 
 	return time.Duration(idleTimeInt) * time.Millisecond
 }
 
-// @TODO: notify user when inactivity is detected and prompt to continue
 func saveInactivityStart() int64 {
 	// Save in database
 	result, err := db.Exec("INSERT INTO inactivity (start) VALUES (?)", time.Now())
 
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error: %s\n", err)
 		return -1
 	}
 
 	id, err := result.LastInsertId()
 
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error: %s\n", err)
 		return -1
 	}
 
@@ -424,7 +423,7 @@ func saveInactivityEnd(id int64) {
 	_, err := db.Exec("UPDATE inactivity SET end = ? WHERE id = ?", time.Now(), id)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error: %s\n", err)
 	}
 }
 
