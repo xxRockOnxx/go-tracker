@@ -65,8 +65,10 @@ func prepareDatabase() {
 
     CREATE TABLE IF NOT EXISTS windows (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT,
-      timestamp DATETIME
+      title TEXT NOT NULL,
+      active BOOLEAN NOT NULL,
+      timestamp DATETIME,
+      UNIQUE(title, timestamp, active)
     );
 
     CREATE TABLE IF NOT EXISTS inactivity (
@@ -179,7 +181,6 @@ func main() {
 		} else {
 			validate := validator.New(validator.WithRequiredStructEnabled())
 
-			// Show first error message only
 			if err := validate.Struct(&Inputs{
 				ActivityInterval:    intervalEntry.Text,
 				InactivityThreshold: inactivityThresholdEntry.Text,
@@ -298,21 +299,45 @@ func saveScreenshots() {
 func saveActiveWindows() {
 	println("Saving active windows")
 
-	cmd := exec.Command("xdotool", "getactivewindow", "getwindowname")
-	var out bytes.Buffer
-	cmd.Stdout = &out
+	windows, err := getWindows()
 
-	err := cmd.Run()
+	if err != nil {
+		log.Printf("Error: %s\n", err)
+		return
+	}
+
+	timestamp := time.Now()
+
+	tx, err := db.Begin()
 
 	if err != nil {
 		log.Fatal(err)
 		return
 	}
 
-	title := strings.TrimSpace(out.String())
+	// There could be multiple windows with the same title at the time of snapshot.
+	// We want to store only one entry for each window title at a given timestamp.
+	// I don't think it's important to know about multiple windows with the same title at the same time.
+	stmt, err := tx.Prepare("INSERT INTO windows (title, active, timestamp) VALUES (?, ?, ?) ON CONFLICT(title, timestamp, active) DO NOTHING")
 
-	if _, err := db.Exec("INSERT INTO windows (title, timestamp) VALUES (?, ?)", title, time.Now()); err != nil {
-		log.Fatal(err)
+	if err != nil {
+		log.Printf("Error: %s\n", err)
+		return
+	}
+
+	defer stmt.Close()
+
+	for _, window := range windows {
+		_, err = stmt.Exec(window.Name, window.Active, timestamp)
+
+		if err != nil {
+			log.Printf("Error: %s\n", err)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("Error: %s\n", err)
 	}
 }
 
