@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	_ "github.com/mattn/go-sqlite3"
 
 	"fyne.io/fyne/v2"
@@ -39,6 +40,7 @@ var (
 
 const PREF_ACTIVITY_INTERVAL = "activityInterval"
 const PREF_INACTIVITY_THRESHOLD = "inactivityThreshold"
+const PREF_INACTIVITY_TIMEOUT = "inactivityTimeout"
 
 func prepareDatabase() {
 	if db != nil {
@@ -108,6 +110,12 @@ func saveSessionEnd(id int64) {
 	}
 }
 
+type Inputs struct {
+	ActivityInterval    string `validate:"required,numeric,gte=0"`
+	InactivityThreshold string `validate:"required,numeric,gte=0"`
+	InactivityTimeout   string `validate:"required,numeric,gte=0"`
+}
+
 func main() {
 	started = false
 
@@ -126,19 +134,30 @@ func main() {
 		intervalEntry,
 	)
 
-	inactivityEntry := newNumericalEntry()
-	inactivityEntry.SetPlaceHolder("300")
-	inactivityEntry.SetText(myApp.Preferences().StringWithFallback(PREF_INACTIVITY_THRESHOLD, "300"))
+	inactivityThresholdEntry := newNumericalEntry()
+	inactivityThresholdEntry.SetPlaceHolder("300")
+	inactivityThresholdEntry.SetText(myApp.Preferences().StringWithFallback(PREF_INACTIVITY_THRESHOLD, "300"))
 
-	inactivityContainer := container.NewVBox(
+	inactivityThresholdContainer := container.NewVBox(
 		widget.NewLabel("Inactivity Threshold (seconds)"),
-		inactivityEntry,
+		inactivityThresholdEntry,
+	)
+
+	inactivityTimeoutEntry := newNumericalEntry()
+	inactivityTimeoutEntry.SetPlaceHolder("15")
+	inactivityTimeoutEntry.SetText(myApp.Preferences().StringWithFallback(PREF_INACTIVITY_TIMEOUT, "15"))
+
+	inactivityTimeoutContainer := container.NewVBox(
+		widget.NewLabel("Inactivity Timeout (seconds)"),
+		inactivityTimeoutEntry,
 	)
 
 	preferencesFormContainer := container.NewVBox(
 		intervalContainer,
 		layout.NewSpacer(),
-		inactivityContainer,
+		inactivityThresholdContainer,
+		layout.NewSpacer(),
+		inactivityTimeoutContainer,
 	)
 
 	var toggleBtn *widget.Button
@@ -150,34 +169,25 @@ func main() {
 			// Update UI
 			toggleBtn.SetText("Start")
 			intervalEntry.Enable()
-			inactivityEntry.Enable()
+			inactivityThresholdEntry.Enable()
+			inactivityTimeoutEntry.Enable()
 
 			// Run side effects
 			saveSessionEnd(sessionID)
 			stopScheduler()
 			stopWatchingForInactivity()
 		} else {
-			// Validate inputs.
-			activityInterval, err := strconv.Atoi(intervalEntry.Text)
-			if err != nil {
-				errDialog := dialog.NewError(errors.New("Invalid activity interval"), window)
-				errDialog.Resize(fyne.NewSize(300, 100))
-				errDialog.Show()
-				return
-			}
+			validate := validator.New(validator.WithRequiredStructEnabled())
 
-			inactivityThreshold, err := strconv.Atoi(inactivityEntry.Text)
-			if err != nil {
-				errDialog := dialog.NewError(errors.New("Invalid inactivity threshold"), window)
-				errDialog.Resize(fyne.NewSize(300, 100))
-				errDialog.Show()
-				return
-			}
-
-			if inactivityThreshold < activityInterval {
-				errDialog := dialog.NewError(errors.New("Inactivity threshold cannot be lower than activity interval"), window)
-				errDialog.Resize(fyne.NewSize(500, 500))
-				errDialog.Show()
+			// Show first error message only
+			if err := validate.Struct(&Inputs{
+				ActivityInterval:    intervalEntry.Text,
+				InactivityThreshold: inactivityThresholdEntry.Text,
+				InactivityTimeout:   inactivityTimeoutEntry.Text,
+			}); err != nil {
+				// Show first error message only
+				fmt.Printf("Value: %s\n", err.(validator.ValidationErrors)[0].Value())
+				dialog.ShowError(errors.New(err.(validator.ValidationErrors)[0].Error()), window)
 				return
 			}
 
@@ -186,11 +196,13 @@ func main() {
 			// Update UI
 			toggleBtn.SetText("Stop")
 			intervalEntry.Disable()
-			inactivityEntry.Disable()
+			inactivityThresholdEntry.Disable()
+			inactivityTimeoutEntry.Disable()
 
 			// Save activity interval and inactivity threshold on start
 			myApp.Preferences().SetString(PREF_ACTIVITY_INTERVAL, intervalEntry.Text)
-			myApp.Preferences().SetString(PREF_INACTIVITY_THRESHOLD, inactivityEntry.Text)
+			myApp.Preferences().SetString(PREF_INACTIVITY_THRESHOLD, inactivityThresholdEntry.Text)
+			myApp.Preferences().SetString(PREF_INACTIVITY_TIMEOUT, inactivityTimeoutEntry.Text)
 
 			prepareDatabase()
 
@@ -200,8 +212,33 @@ func main() {
 				panic("Failed to start session")
 			}
 
+			activityInterval, _ := strconv.Atoi(intervalEntry.Text)
+			inactivityThreshold, _ := strconv.Atoi(inactivityThresholdEntry.Text)
+			inactivityTimeout, _ := strconv.Atoi(inactivityTimeoutEntry.Text)
+
 			startScheduler(time.Duration(activityInterval) * time.Second)
-			watchForInactivity(time.Duration(inactivityThreshold)*time.Second, time.Duration(activityInterval)*time.Second)
+
+			watchForInactivity(WatchForInactivityParams{
+				Threshold: time.Duration(inactivityThreshold) * time.Second,
+				IsIdle: func(isIdle chan bool) {
+					askStillWorking(myApp, time.Duration(inactivityTimeout)*time.Second, func(response string) {
+						switch response {
+						case PRESENCE_TIMEOUT:
+							isIdle <- true
+						case PRESENCE_YES, PRESENCE_CLOSED:
+							isIdle <- false
+						case PRESENCE_NO:
+							toggleBtn.OnTapped()
+							isIdle <- false
+						default:
+							println("Unhandled presence response")
+						}
+					})
+				},
+				OnActive: func() {
+					startScheduler(time.Duration(activityInterval) * time.Second)
+				},
+			})
 		}
 	})
 
@@ -218,6 +255,7 @@ func main() {
 
 	window.SetContent(content)
 	window.CenterOnScreen()
+
 	window.ShowAndRun()
 }
 
@@ -365,39 +403,57 @@ func saveInactivityEnd(id int64) {
 	}
 }
 
+type WatchForInactivityParams struct {
+	Threshold time.Duration
+	IsIdle    func(chan bool)
+	OnActive  func()
+}
+
 // @TODO: UI for adding reason for inactivity
-func watchForInactivity(threshold time.Duration, schedulerInterval time.Duration) {
+func watchForInactivity(params WatchForInactivityParams) {
 	if idleTicker != nil {
 		return
 	}
 
 	println("Watching for inactivity")
 
+	threshold := params.Threshold
+	isIdle := params.IsIdle
+	onActive := params.OnActive
+
 	go func() {
 		idleTicker = time.NewTicker(1 * time.Second)
 		idleTickerDone = make(chan struct{})
 		inactive := getIdleTime() >= threshold
 
-		inactiveId := int64(-1)
+		inactivityId := int64(-1)
 
 		for {
 			select {
 			case <-idleTicker.C:
 				idleTime := getIdleTime()
 				if idleTime >= threshold && !inactive {
-					inactive = true
-					println("User went inactive")
-					inactiveId = saveInactivityStart()
-					stopScheduler()
-				} else if idleTime < threshold && inactive {
-					inactive = false
-					println("User is active")
+					println("Confirming inactivity")
 
-					if inactiveId != -1 {
-						saveInactivityEnd(inactiveId)
+					confirmIsIdle := make(chan bool)
+					isIdle(confirmIsIdle)
+
+					if <-confirmIsIdle {
+						println("Confirmed inactivity")
+						inactive = true
+						inactivityId = saveInactivityStart()
+					} else {
+						println("Still active")
+					}
+				} else if idleTime < threshold && inactive {
+					println("Activity detected")
+					inactive = false
+
+					if inactivityId != -1 {
+						saveInactivityEnd(inactivityId)
 					}
 
-					startScheduler(schedulerInterval)
+					onActive()
 				}
 			case <-idleTickerDone:
 				idleTicker.Stop()
@@ -417,4 +473,51 @@ func stopWatchingForInactivity() {
 	println("Stopping watching for inactivity")
 
 	close(idleTickerDone)
+}
+
+const PRESENCE_YES = "Yes"
+const PRESENCE_NO = "No"
+const PRESENCE_TIMEOUT = "Timeout"
+const PRESENCE_CLOSED = "Closed"
+
+func askStillWorking(app fyne.App, timeout time.Duration, onResponse func(string)) {
+	title := "Are you still working?"
+	window := app.NewWindow(title)
+	window.Resize(fyne.NewSize(300, 100))
+	window.CenterOnScreen()
+	window.SetFixedSize(true)
+
+	var presence string
+
+	window.SetOnClosed(func() {
+		if presence == "" {
+			presence = PRESENCE_CLOSED
+		}
+		onResponse(presence)
+	})
+
+	window.SetContent(container.NewVBox(
+		widget.NewLabel(title),
+		widget.NewLabel("Automatically closing in "+timeout.String()),
+		container.NewHBox(
+			layout.NewSpacer(),
+			widget.NewButton("Yes", func() {
+				presence = PRESENCE_YES
+				window.Close()
+			}),
+			widget.NewButton("No", func() {
+				presence = PRESENCE_NO
+				window.Close()
+			}),
+		),
+	))
+
+	window.Show()
+
+	// Close window after timeout
+	go func() {
+		time.Sleep(timeout)
+		presence = PRESENCE_TIMEOUT
+		window.Close()
+	}()
 }
